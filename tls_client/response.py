@@ -14,6 +14,9 @@ except ImportError:
 from .cookies import RequestsCookieJar, cookiejar_from_dict
 from .structures import CaseInsensitiveDict
 
+from .exceptions import (
+    StreamConsumedError
+)
 
 class Response:
     """object, which contains the response to an HTTP request."""
@@ -168,10 +171,14 @@ class Response:
     @property
     def content(self):
         """Content of the response, in bytes."""
-
+        
         if self._content is False:
             if self._content_consumed:
-                raise RuntimeError("The content for this response was already consumed")
+                #we can use the new exception we created for streaming
+                raise StreamConsumedError(
+                    "The content for this response was already consumed. "
+                    "Content can only be accessed once unless stream=False."
+                )
 
             if self.status_code == 0:
                 self._content = None
