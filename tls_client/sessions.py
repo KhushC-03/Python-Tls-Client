@@ -14,7 +14,6 @@ from urllib.parse import urljoin
 from .__version__ import __version__
 from .cffi import destroySession, freeMemory, request
 from .cookies import cookiejar_from_dict, extract_cookies_to_jar, merge_cookies
-from .exceptions import TLSClientException
 from .response import Response, build_response
 from .settings import ClientIdentifiers
 from .structures import CaseInsensitiveDict
@@ -24,6 +23,9 @@ if platform == "win32":
 else:
     preferred_clock = time.time
 
+from .exceptions import (
+   ErrorClassifier, TooManyRedirects
+)
 
 class StoppableThread(threading.Thread):
     def __init__(self, main_request, target, daemon=True, **kwargs):
@@ -349,12 +351,35 @@ class Session:
         # todo add exception if success is False
         return destroy_session_response_string
     
-    def _cffi_request(self, request_payload: dict) -> Response:
+    def _cffi_request(self, request_payload: dict):
+
         response = request(dumps(request_payload))
         response_bytes = ctypes.string_at(response)
         response_string = response_bytes.decode('utf-8')
         response_object = loads(response_string)
         freeMemory(response_object['id'].encode('utf-8'))
+        
+        if response_object.get("status") == 0:
+            error_message = response_object.get("body", "Unknown error occurred")
+            
+            error_details = None
+            try:
+                # Checking if we can extract the go error using json
+                if error_message.startswith("{"):
+                    import json
+                    error_details = json.loads(error_message)
+                    if "error" in error_details:
+                        error_message = error_details["error"]
+            except:
+                pass
+            
+            # Implemented the ErrorClassifier to raise the matched exception
+            ErrorClassifier.raise_for_error(
+                error_message,
+                response=response_object,
+                request_payload=request_payload
+            )
+        
         return response_object
 
     @staticmethod
@@ -534,7 +559,8 @@ class Session:
             is_rotating_proxy: Optional[bool] = None,
             stream: Optional[bool] = False,
             chunk_size: Optional[int] = 1024,
-    ) -> Response:
+    ):
+
         
         if not self.save_cookies:
             self.cookies.clear()
@@ -592,13 +618,10 @@ class Session:
             )
 
             # Execute the request using the TLS client
+            # we can use the new _cffi_request method to handles errors better
             response_object = self._cffi_request(request_payload)
 
             elapsed = preferred_clock() - start
-
-            # Handle response, split up into new method?
-            if response_object["status"] == 0:
-                raise TLSClientException(response_object["body"])
 
             response_cookie_jar = extract_cookies_to_jar(
                 request_url=url,
@@ -620,8 +643,14 @@ class Session:
 
             redirect += 1
             history.append(response)
+            
+            # if we seem to get alot of redirects, we can use the right exception
             if redirect > self.MAX_REDIRECTS:
-                raise TLSClientException(f"Max redirects ({self.MAX_REDIRECTS}) exceeded")
+                raise TooManyRedirects(
+                    f"Exceeded maximum allowed redirects ({self.MAX_REDIRECTS})",
+                    response=response,
+                    request_payload=request_payload
+                )
 
             url = self._rebuild_url(url, response)
             method = self._rebuild_methods(method, response)
