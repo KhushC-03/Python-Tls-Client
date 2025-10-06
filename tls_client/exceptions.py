@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 
 class TLSClientException(IOError):
     """Base exception class for all TLS client errors"""
-    def __init__(self, message: str, response: Optional[Any] = None, request_payload: Optional[Dict] = None):
+    def __init__(self, message, response = None, request_payload = None):
         self.message = message
         self.response = response
         self.request_payload = request_payload
@@ -65,7 +65,6 @@ class RetryError(RequestException):
 
 class TooManyRedirects(RequestException):
     """Raised when the maximum number of redirects is exceeded"""
-    pass
 
 
 class MissingSchema(RequestException):
@@ -87,9 +86,16 @@ class ProxyConnectionError(ProxyError):
 class ProxyAuthenticationRequired(ProxyError):
     """Raised when proxy requires authentication (407)"""
     
+class ProxyFlagged(ProxyError):
+    """Raised when an HTTP error status is returned (403), the proxy has been flagged"""
 
+class ProxyDenied(ProxyError):
+    """Raised when an HTTP error status is returned (502), the proxy has been denied"""
+    
 class HTTPError(RequestException):
     """Raised when an HTTP error status is returned (4xx, 5xx)"""
+    
+
 
 
 class ErrorClassifier:
@@ -97,16 +103,16 @@ class ErrorClassifier:
     # all the differnt error types, so we can use regex to find them
     ERROR_PATTERNS = {
         # Timeout errors
-        Timeout: [
-            r"timeout",
-            r"context deadline exceeded",
-            r"operation timed out",
-            r"i/o timeout",
-        ],
         ConnectTimeout: [
             r"connect timeout",
-            r"connection timeout",
+            r"connection timeout", 
             r"dial tcp.*i/o timeout",
+        ],
+        Timeout: [
+            r"context deadline exceeded",
+            r"operation timed out", 
+            r"i/o timeout",
+            r"timeout",
         ],
         ReadTimeout: [
             r"read timeout",
@@ -120,13 +126,7 @@ class ErrorClassifier:
             r"tls",
             r"ssl",
             r"handshake failure",
-            r"certificate verify failed",
-            r"certificate has expired",
-            r"self signed certificate",
-            r"unable to verify the first certificate",
-            r"certificate signed by unknown authority",
-            r"bad certificate",
-            r"certificate is not trusted",
+            r"certificate verify failed"
         ],
         
         # Proxy errors
@@ -212,11 +212,19 @@ class ErrorClassifier:
                 if re.search(pattern, error_lower):
                     return exception_class(error_message, response, request_payload)
         
-        # Check if it's a server returning 407 (as opposed to proxy) so then it helps us differntiate it for sites like RAH
+        # Check if it's a server returning 407, 403, 502 (as opposed to proxy) so then it helps us differntiate it for sites like RAH
         if response and hasattr(response, 'status_code'):
             if response.status_code == 407:
                 # Server returned 407, not a proxy error
                 return HTTPError(error_message, response, request_payload)
+            
+            if response.status_code == 403:
+                # Server returned 403
+                return ProxyFlagged(error_message, response, request_payload)
+
+            if response.status_code == 502:
+                # Server returned 502
+                return ProxyDenied(error_message, response, request_payload)
         
         # Default to base exception if no pattern matches
         return TLSClientException(error_message, response, request_payload)
